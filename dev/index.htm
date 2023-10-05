@@ -1,0 +1,64 @@
+<html>
+<header>
+  <title>test</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+</header>
+
+<body>
+  <h2>radio button</h2>
+  <div id="divForm">
+    <p>Please select your favorite drink:</p>
+    <input type="radio" id="lstDrink_0" name="lstDrink" value="0" onclick="checkRadio(name)" />
+    <label for="coke">Coke</label><br />
+    <input type="radio" id="lstDrink_1" name="lstDrink" value="1" onclick="checkRadio(name)" />
+    <label for="coffee">Coffee</label><br />
+    <input type="radio" id="lstDrink_2" name="lstDrink" value="2" onclick="checkRadio(name)" />
+    <label for="iceTea">Ice Tea</label><br />
+    <input type="radio" id="lstDrink_3" name="lstDrink" value="3" onclick="checkRadio(name)" />
+    <label for="bubbleTea">Bubble Tea</label>
+
+    <br />
+
+    <p>Please select your food:</p>
+    <input type="radio" id="lstFood_0" name="lstFood" value="0" onclick="checkRadio(name)" />
+    <label for="Macdonald">Macdonald</label><br />
+    <input type="radio" id="lstFood_1" name="lstFood" value="1" onclick="checkRadio(name)" />
+    <label for="KFC">KFC</label><br />
+    <input type="radio" id="lstFood_2" name="lstFood" value="2" onclick="checkRadio(name)" />
+    <label for="TimHorton">Tim Horton</label><br />
+    <input type="radio" id="lstFood_3" name="lstFood" value="3" onclick="checkRadio(name)" />
+    <label for="FiveGuys">FiveGuys</label>
+
+    <br />
+    <br />
+  </div>
+
+  <script language="javascript">
+    function checkRadio(name) {
+      const totalValue = 3;
+
+      if (name == "lstDrink") {
+        var selectedDrink = document.querySelector('input[name="lstDrink"]:checked').value;
+        var setFoodValue = totalValue - selectedDrink;
+
+        console.log("Choice: ", name, "selected: ", selectedDrink);
+        console.log("set food value", setFoodValue);
+
+        document.getElementById("lstFood_" + setFoodValue).checked = true;
+
+      } else if (name == "lstFood") {
+
+        var selectedFood = document.querySelector('input[name="lstFood"]:checked').value;
+        var setDrinkValue = totalValue - selectedFood;
+
+        console.log("Choice: ", name, "selected: ", selectedFood);
+        console.log("set drink value", setDrinkValue);
+
+        document.getElementById("lstDrink_" + setDrinkValue).checked = true;
+
+      }
+    }
+  </script>
+</body>
+
+</html>
