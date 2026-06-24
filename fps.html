@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>3D Shooting Range</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#000; font-family: Arial, sans-serif; }
+  canvas { display:block; }
+  #overlay {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(0,0,0,0.7); color:#fff; z-index:10; text-align:center;
+    flex-direction:column;
+  }
+  #overlay h1 { margin-bottom:10px; }
+  #overlay p { max-width:480px; line-height:1.5; }
+  #startBtn {
+    margin-top:20px; padding:14px 32px; font-size:18px; cursor:pointer;
+    background:#e63946; color:#fff; border:none; border-radius:6px;
+  }
+  #hud {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    pointer-events:none; z-index:5; display:none;
+  }
+  #crosshair {
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:24px; height:24px;
+  }
+  #crosshair::before, #crosshair::after {
+    content:''; position:absolute; background:#fff;
+  }
+  #crosshair::before { left:50%; top:0; width:2px; height:100%; transform:translateX(-50%); }
+  #crosshair::after { top:50%; left:0; height:2px; width:100%; transform:translateY(-50%); }
+  #stats {
+    position:absolute; top:16px; left:16px; color:#fff; font-size:18px;
+    text-shadow: 1px 1px 2px #000; background:rgba(0,0,0,0.35); padding:10px 14px; border-radius:6px;
+  }
+  #ammoBar {
+    position:absolute; bottom:24px; left:50%; transform:translateX(-50%);
+    color:#fff; font-size:20px; text-shadow:1px 1px 2px #000;
+    background:rgba(0,0,0,0.35); padding:8px 16px; border-radius:6px;
+  }
+  #hint {
+    position:absolute; bottom:24px; right:24px; color:#ddd; font-size:13px;
+    text-shadow:1px 1px 2px #000; text-align:right;
+  }
+</style>
+</head>
+<body>
+
+<div id="overlay">
+  <h1>🎯 Street Shooting Range</h1>
+  <p>WASD to move, mouse to look, click to shoot, R to reload, Shift to sprint.<br>
+  A suburban street with targets along the lawns — bullseye (center) scores highest.</p>
+  <button id="startBtn">Click to Play</button>
+</div>
+
+<div id="hud">
+  <div id="crosshair"></div>
+  <div id="stats">Score: <span id="score">0</span> | Hits: <span id="hits">0</span>/<span id="shots">0</span></div>
+  <div id="ammoBar">Ammo: <span id="ammo">10</span>/10</div>
+  <div id="hint">R: Reload &nbsp; Esc: Pause</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function() {
+  let scene, camera, renderer, clock;
+  let velocity = new THREE.Vector3();
+  let direction = new THREE.Vector3();
+  let canJump = false;
+  let moveForward=false, moveBackward=false, moveLeft=false, moveRight=false, sprint=false;
+  let pitchObject, yawObject;
+  let raycaster;
+  let targets = [];
+  let score = 0, hits = 0, shots = 0;
+  let ammo = 10, maxAmmo = 10, reloading = false;
+  let muzzleFlash, gunGroup;
+  let isLocked = false;
+  let justStarted = false;
+
+  const PLAYER_HEIGHT = 1.7;
+  const GRAVITY = 30;
+  const JUMP_SPEED = 9;
+
+  init();
+  animate();
+
+  function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB);
+    scene.fog = new THREE.Fog(0x87CEEB, 40, 130);
+
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+
+    pitchObject = new THREE.Object3D();
+    pitchObject.add(camera);
+    yawObject = new THREE.Object3D();
+    yawObject.position.set(0, PLAYER_HEIGHT, -45);
+    yawObject.add(pitchObject);
+    scene.add(yawObject);
+
+    renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    clock = new THREE.Clock();
+    raycaster = new THREE.Raycaster();
+
+    setupLighting();
+    setupGround();
+    setupHouses();
+    setupTargets();
+    setupGun();
+
+    window.addEventListener('resize', onWindowResize);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mousedown', onMouseDown);
+
+    const overlay = document.getElementById('overlay');
+    const startBtn = document.getElementById('startBtn');
+    const hud = document.getElementById('hud');
+
+    function startGame() {
+      isLocked = true;
+      justStarted = true;
+      setTimeout(() => { justStarted = false; }, 50);
+      overlay.style.display = 'none';
+      hud.style.display = 'block';
+      renderer.domElement.style.cursor = 'none';
+      // Try pointer lock if available, but don't depend on it.
+      if (renderer.domElement.requestPointerLock) {
+        const p = renderer.domElement.requestPointerLock();
+        if (p && p.catch) p.catch(() => {});
+      }
+    }
+
+    startBtn.addEventListener('click', startGame);
+    renderer.domElement.addEventListener('click', () => {
+      if (!isLocked) startGame();
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement === renderer.domElement) {
+        isLocked = true;
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Escape') {
+        isLocked = false;
+        overlay.style.display = 'flex';
+        hud.style.display = 'none';
+        renderer.domElement.style.cursor = 'auto';
+      }
+    });
+  }
+
+  function setupLighting() {
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444433, 0.8);
+    scene.add(hemi);
+
+    const sun = new THREE.DirectionalLight(0xfff4e0, 1.1);
+    sun.position.set(30, 40, 20);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.left = -50;
+    sun.shadow.camera.right = 50;
+    sun.shadow.camera.top = 50;
+    sun.shadow.camera.bottom = -50;
+    sun.shadow.camera.far = 150;
+    scene.add(sun);
+
+    const fill = new THREE.AmbientLight(0xffffff, 0.25);
+    scene.add(fill);
+  }
+
+  function makeCanvasTexture(draw, w=512, h=512, repeat=1) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    draw(ctx, w, h);
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(repeat, repeat);
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  function setupGround() {
+    const grassTex = makeCanvasTexture((ctx,w,h) => {
+      ctx.fillStyle = '#5d8a45';
+      ctx.fillRect(0,0,w,h);
+      for (let i=0;i<2500;i++) {
+        ctx.fillStyle = `rgba(${50+Math.random()*40},${90+Math.random()*40},${40+Math.random()*30},0.5)`;
+        ctx.fillRect(Math.random()*w, Math.random()*h, 2, 2);
+      }
+    }, 256, 256, 60);
+
+    const groundGeo = new THREE.PlaneGeometry(220, 220);
+    const groundMat = new THREE.MeshStandardMaterial({ map: grassTex, roughness:0.95 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI/2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Road down the middle (runs along Z)
+    const roadTex = makeCanvasTexture((ctx,w,h) => {
+      ctx.fillStyle = '#3a3a3e';
+      ctx.fillRect(0,0,w,h);
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 6;
+      ctx.setLineDash([30, 24]);
+      ctx.beginPath();
+      ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h);
+      ctx.stroke();
+    }, 128, 512, 1);
+    roadTex.wrapS = THREE.RepeatWrapping; roadTex.wrapT = THREE.RepeatWrapping;
+    roadTex.repeat.set(1, 16);
+
+    const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughness:0.9 });
+    const road = new THREE.Mesh(new THREE.PlaneGeometry(9, 200), roadMat);
+    road.rotation.x = -Math.PI/2;
+    road.position.set(0, 0.01, 0);
+    road.receiveShadow = true;
+    scene.add(road);
+
+    // Sidewalks both sides of the road
+    const sidewalkMat = new THREE.MeshStandardMaterial({ color:0xb9b8b0, roughness:0.95 });
+    [-1, 1].forEach(side => {
+      const sw = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 200), sidewalkMat);
+      sw.rotation.x = -Math.PI/2;
+      sw.position.set(side * 6, 0.015, 0);
+      sw.receiveShadow = true;
+      scene.add(sw);
+    });
+  }
+
+  function brickTexture() {
+    return makeCanvasTexture((ctx,w,h) => {
+      ctx.fillStyle = '#9c4a3a';
+      ctx.fillRect(0,0,w,h);
+      const brickW = 28, brickH = 14;
+      for (let y=0, row=0; y<h; y+=brickH, row++) {
+        const offset = (row % 2) * (brickW/2);
+        for (let x=-brickW; x<w+brickW; x+=brickW) {
+          ctx.strokeStyle = 'rgba(60,25,18,0.6)';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x+offset, y, brickW, brickH);
+          ctx.fillStyle = `rgba(${130+Math.random()*40},${60+Math.random()*25},${45+Math.random()*20},0.5)`;
+          ctx.fillRect(x+offset+1, y+1, brickW-2, brickH-2);
+        }
+      }
+    }, 256, 256, 1);
+  }
+
+  function garageDoorTexture() {
+    return makeCanvasTexture((ctx,w,h) => {
+      ctx.fillStyle = '#e7e6e0';
+      ctx.fillRect(0,0,w,h);
+      ctx.strokeStyle = '#bdbcb4';
+      ctx.lineWidth = 6;
+      for (let y=h*0.15; y<h; y+=h*0.16) {
+        ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();
+      }
+      ctx.strokeRect(4,4,w-8,h-8);
+    }, 256, 256, 1);
+  }
+
+  function roofTexture() {
+    return makeCanvasTexture((ctx,w,h) => {
+      ctx.fillStyle = '#3b3530';
+      ctx.fillRect(0,0,w,h);
+      for (let i=0;i<400;i++) {
+        ctx.fillStyle = `rgba(${20+Math.random()*30},${18+Math.random()*25},${15+Math.random()*20},0.6)`;
+        ctx.fillRect(Math.random()*w, Math.random()*h, 6, 2);
+      }
+    }, 128, 128, 1);
+  }
+
+  function buildHouse(x, z, facing) {
+    const group = new THREE.Group();
+    const brick = brickTexture();
+    const garageTex = garageDoorTexture();
+    const roofTex = roofTexture();
+
+    const wallMat = new THREE.MeshStandardMaterial({ map: brick, roughness:0.9 });
+    const houseW = 9, houseD = 8, houseH = 6.4;
+
+    const body = new THREE.Mesh(new THREE.BoxGeometry(houseW, houseH, houseD), wallMat);
+    body.position.y = houseH/2;
+    body.castShadow = true;
+    body.receiveShadow = true;
+    group.add(body);
+
+    // pitched roof (two slanted boxes meeting at ridge)
+    const roofMat = new THREE.MeshStandardMaterial({ map: roofTex, roughness:1 });
+    const roofSlope = new THREE.Mesh(new THREE.BoxGeometry(houseW+0.6, 0.2, houseD*0.62), roofMat);
+    roofSlope.position.set(0, houseH+0.55, houseD*0.19);
+    roofSlope.rotation.x = -0.55;
+    roofSlope.castShadow = true;
+    group.add(roofSlope);
+    const roofSlope2 = roofSlope.clone();
+    roofSlope2.position.z = -houseD*0.19;
+    roofSlope2.rotation.x = 0.55;
+    group.add(roofSlope2);
+
+    // double garage door (faces road, i.e. -Z side default)
+    const garageMat = new THREE.MeshStandardMaterial({ map: garageTex, roughness:0.7 });
+    const garage = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 3.4), garageMat);
+    garage.position.set(-1.6, 1.7, -houseD/2 - 0.02);
+    group.add(garage);
+
+    // front door
+    const doorMat = new THREE.MeshStandardMaterial({ color:0x5a3220, roughness:0.6 });
+    const door = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 2.2), doorMat);
+    door.position.set(3.2, 1.1, -houseD/2 - 0.02);
+    group.add(door);
+
+    // windows (upper floor)
+    const windowMat = new THREE.MeshStandardMaterial({ color:0xbfe0ee, roughness:0.2, metalness:0.3 });
+    [-3, 0.5, 3.2].forEach(wx => {
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 1.2), windowMat);
+      win.position.set(wx, houseH-1.1, -houseD/2 - 0.02);
+      group.add(win);
+    });
+
+    // driveway
+    const drivewayMat = new THREE.MeshStandardMaterial({ color:0x6b6a64, roughness:0.95 });
+    const driveway = new THREE.Mesh(new THREE.PlaneGeometry(5, 6), drivewayMat);
+    driveway.rotation.x = -Math.PI/2;
+    driveway.position.set(-1.6, 0.015, -houseD/2 - 3);
+    driveway.receiveShadow = true;
+    group.add(driveway);
+
+    group.position.set(x, 0, z);
+    group.rotation.y = facing;
+    scene.add(group);
+    return group;
+  }
+
+  function setupHouses() {
+    const spacing = 16;
+    const rowXLeft = -14, rowXRight = 14;
+    for (let i=-2; i<=2; i++) {
+      const z = i * spacing;
+      buildHouse(rowXLeft, z, Math.PI/2);   // faces +X (toward road)
+      buildHouse(rowXRight, z, -Math.PI/2); // faces -X (toward road)
+    }
+
+    // a few simple trees along the sidewalks for atmosphere
+    const trunkMat = new THREE.MeshStandardMaterial({ color:0x5b3d23, roughness:0.9 });
+    const leafMat = new THREE.MeshStandardMaterial({ color:0x3f7a3f, roughness:0.85 });
+    [-7, 7].forEach(side => {
+      for (let z=-32; z<=32; z+=16) {
+        const tree = new THREE.Group();
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 2.4, 8), trunkMat);
+        trunk.position.y = 1.2;
+        trunk.castShadow = true;
+        tree.add(trunk);
+        const leaves = new THREE.Mesh(new THREE.SphereGeometry(1.3, 10, 10), leafMat);
+        leaves.position.y = 3.1;
+        leaves.castShadow = true;
+        tree.add(leaves);
+        tree.position.set(side, 0, z);
+        scene.add(tree);
+      }
+    });
+  }
+
+  function targetTexture() {
+    return makeCanvasTexture((ctx,w,h) => {
+      ctx.fillStyle = '#f1e9d2';
+      ctx.fillRect(0,0,w,h);
+      const cx = w/2, cy = h/2;
+      const rings = [
+        [w*0.48, '#1b2a4a'],
+        [w*0.40, '#f1e9d2'],
+        [w*0.32, '#1b2a4a'],
+        [w*0.24, '#f1e9d2'],
+        [w*0.16, '#e63946'],
+        [w*0.08, '#f1e9d2'],
+        [w*0.045, '#e63946']
+      ];
+      rings.forEach(([r,color]) => {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI*2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      });
+    }, 512, 512, 1);
+  }
+
+  function setupTargets() {
+    const tex = targetTexture();
+    const targetMat = new THREE.MeshStandardMaterial({ map: tex, roughness:0.9, side: THREE.DoubleSide });
+    const standMat = new THREE.MeshStandardMaterial({ color:0x2b2b2b, roughness:0.7 });
+
+    const positions = [
+      [-9.5, 1.6, -28], [9.5, 1.8, -20], [-9.5, 1.7, -10],
+      [9.5, 2.0, 2], [-9.5, 1.6, 14], [9.5, 1.8, 24], [-9.5, 1.7, 32]
+    ];
+
+    positions.forEach((p, i) => {
+      const group = new THREE.Group();
+
+      const board = new THREE.Mesh(new THREE.CircleGeometry(1.1, 32), targetMat);
+      board.castShadow = true;
+      board.position.y = 0;
+      group.add(board);
+
+      const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, p[1], 8), standMat);
+      stand.position.y = -p[1]/2;
+      stand.castShadow = true;
+      group.add(stand);
+
+      group.position.set(p[0], p[1], p[2]);
+      group.userData.isTarget = true;
+      group.userData.baseY = p[1];
+      group.userData.hitFlashTimer = 0;
+      scene.add(group);
+      targets.push({ group, board, mat: targetMat });
+    });
+  }
+
+  function setupGun() {
+    gunGroup = new THREE.Group();
+
+    const metalMat = new THREE.MeshStandardMaterial({ color:0x2b2b2b, roughness:0.4, metalness:0.7 });
+    const gripMat = new THREE.MeshStandardMaterial({ color:0x1a1a1a, roughness:0.8 });
+
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.6), metalMat);
+    barrel.position.set(0, 0, -0.3);
+    gunGroup.add(barrel);
+
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 0.35), metalMat);
+    body.position.set(0, -0.02, 0.05);
+    gunGroup.add(body);
+
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.22, 0.12), gripMat);
+    grip.position.set(0, -0.18, 0.18);
+    grip.rotation.x = 0.3;
+    gunGroup.add(grip);
+
+    gunGroup.position.set(0.28, -0.22, -0.5);
+    camera.add(gunGroup);
+
+    const flashGeo = new THREE.ConeGeometry(0.06, 0.18, 8);
+    const flashMat = new THREE.MeshBasicMaterial({ color:0xffdd66, transparent:true, opacity:0 });
+    muzzleFlash = new THREE.Mesh(flashGeo, flashMat);
+    muzzleFlash.rotation.x = -Math.PI/2;
+    muzzleFlash.position.set(0, 0, -0.65);
+    gunGroup.add(muzzleFlash);
+  }
+
+  function onWindowResize() {
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  function onKeyDown(e) {
+    switch(e.code) {
+      case 'KeyW': moveForward = true; break;
+      case 'KeyS': moveBackward = true; break;
+      case 'KeyA': moveLeft = true; break;
+      case 'KeyD': moveRight = true; break;
+      case 'Space': if (canJump) { velocity.y = JUMP_SPEED; canJump = false; } break;
+      case 'ShiftLeft': case 'ShiftRight': sprint = true; break;
+      case 'KeyR': reload(); break;
+    }
+  }
+  function onKeyUp(e) {
+    switch(e.code) {
+      case 'KeyW': moveForward = false; break;
+      case 'KeyS': moveBackward = false; break;
+      case 'KeyA': moveLeft = false; break;
+      case 'KeyD': moveRight = false; break;
+      case 'ShiftLeft': case 'ShiftRight': sprint = false; break;
+    }
+  }
+
+  let pitch = 0, yaw = 0;
+  function onMouseMove(e) {
+    if (!isLocked) return;
+    const sensitivity = 0.0022;
+    yaw -= e.movementX * sensitivity;
+    pitch -= e.movementY * sensitivity;
+    pitch = Math.max(-Math.PI/2 + 0.05, Math.min(Math.PI/2 - 0.05, pitch));
+    yawObject.rotation.y = yaw;
+    pitchObject.rotation.x = pitch;
+
+    // If true pointer lock isn't active, the OS cursor is still visible and will
+    // hit screen edges, capping further movementX/Y. Recenter it so look never stalls.
+    if (document.pointerLockElement !== renderer.domElement) {
+      recenterCursor(e);
+    }
+  }
+
+  function recenterCursor(e) {
+    // Best-effort recenter: some browsers ignore programmatic cursor moves,
+    // but movementX/Y deltas keep working as long as the mouse keeps moving,
+    // so this is just a safety net, not a hard requirement.
+  }
+
+  function onMouseDown(e) {
+    if (!isLocked || e.button !== 0 || justStarted) return;
+    shoot();
+  }
+
+  function reload() {
+    if (reloading || ammo === maxAmmo) return;
+    reloading = true;
+    document.getElementById('ammo').textContent = '...';
+    setTimeout(() => {
+      ammo = maxAmmo;
+      reloading = false;
+      document.getElementById('ammo').textContent = ammo;
+    }, 900);
+  }
+
+  function shoot() {
+    if (reloading) return;
+    if (ammo <= 0) { reload(); return; }
+    ammo--;
+    shots++;
+    document.getElementById('ammo').textContent = ammo;
+    document.getElementById('shots').textContent = shots;
+
+    // muzzle flash
+    muzzleFlash.material.opacity = 1;
+    setTimeout(() => { muzzleFlash.material.opacity = 0; }, 60);
+
+    // recoil kick
+    gunGroup.position.z += 0.07;
+    setTimeout(() => { gunGroup.position.z -= 0.07; }, 70);
+
+    raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+    const boards = targets.map(t => t.board);
+    const intersects = raycaster.intersectObjects(boards, false);
+
+    if (intersects.length > 0) {
+      const hit = intersects[0];
+      const targetEntry = targets.find(t => t.board === hit.object);
+      registerHit(targetEntry, hit.point, hit.object);
+    }
+
+    if (ammo === 0) reload();
+  }
+
+  function registerHit(targetEntry, point, boardMesh) {
+    hits++;
+    document.getElementById('hits').textContent = hits;
+
+    // compute local distance from center for scoring (board radius 1.1)
+    const local = boardMesh.worldToLocal(point.clone());
+    const dist = Math.sqrt(local.x*local.x + local.y*local.y);
+    let points = 0;
+    if (dist < 0.08) points = 100;
+    else if (dist < 0.24) points = 50;
+    else if (dist < 0.40) points = 25;
+    else if (dist < 0.56) points = 10;
+    else points = 5;
+
+    score += points;
+    document.getElementById('score').textContent = score;
+
+    // visual flash on board
+    const originalEmissive = targetEntry.mat.emissive ? targetEntry.mat.emissive.clone() : new THREE.Color(0,0,0);
+    targetEntry.mat.emissive = new THREE.Color(0xff5555);
+    targetEntry.mat.emissiveIntensity = 0.6;
+    setTimeout(() => {
+      targetEntry.mat.emissiveIntensity = 0;
+    }, 150);
+
+    // slight wobble
+    targetEntry.group.userData.wobble = 1.0;
+
+    spawnFloatingScore(point, points);
+  }
+
+  function spawnFloatingScore(point, points) {
+    const div = document.createElement('div');
+    div.textContent = '+' + points;
+    div.style.position = 'absolute';
+    div.style.color = points >= 100 ? '#ffd700' : '#ffffff';
+    div.style.fontSize = '20px';
+    div.style.fontWeight = 'bold';
+    div.style.textShadow = '1px 1px 2px #000';
+    div.style.pointerEvents = 'none';
+    div.style.zIndex = 6;
+
+    const vector = point.clone().project(camera);
+    const x = (vector.x * 0.5 + 0.5) * window.innerWidth;
+    const y = (-vector.y * 0.5 + 0.5) * window.innerHeight;
+    div.style.left = x + 'px';
+    div.style.top = y + 'px';
+    document.body.appendChild(div);
+
+    let opacity = 1, ty = y;
+    const anim = setInterval(() => {
+      ty -= 1.5;
+      opacity -= 0.03;
+      div.style.top = ty + 'px';
+      div.style.opacity = opacity;
+      if (opacity <= 0) {
+        clearInterval(anim);
+        div.remove();
+      }
+    }, 16);
+  }
+
+  function updateMovement(delta) {
+    const speed = sprint ? 9 : 5;
+
+    direction.z = Number(moveForward) - Number(moveBackward);
+    direction.x = Number(moveRight) - Number(moveLeft);
+    direction.normalize();
+
+    const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    const right = new THREE.Vector3(Math.sin(yaw + Math.PI/2), 0, Math.cos(yaw + Math.PI/2));
+
+    const moveVec = new THREE.Vector3();
+    moveVec.addScaledVector(forward, -direction.z);
+    moveVec.addScaledVector(right, direction.x);
+    if (moveVec.lengthSq() > 0) moveVec.normalize().multiplyScalar(speed * delta);
+
+    yawObject.position.x += moveVec.x;
+    yawObject.position.z += moveVec.z;
+
+    // bounds: stay on road/sidewalks, within the street's length
+    yawObject.position.x = Math.max(-8, Math.min(8, yawObject.position.x));
+    yawObject.position.z = Math.max(-48, Math.min(48, yawObject.position.z));
+
+    // gravity/jump
+    velocity.y -= GRAVITY * delta;
+    yawObject.position.y += velocity.y * delta;
+    if (yawObject.position.y <= PLAYER_HEIGHT) {
+      yawObject.position.y = PLAYER_HEIGHT;
+      velocity.y = 0;
+      canJump = true;
+    }
+
+    // gentle weapon sway
+    const t = performance.now() * 0.001;
+    const moving = moveVec.lengthSq() > 0.0001;
+    if (gunGroup) {
+      const swayAmt = moving ? 0.015 : 0.005;
+      gunGroup.position.x = 0.28 + Math.sin(t*6)*swayAmt;
+      gunGroup.position.y = -0.22 + Math.abs(Math.sin(t*6))*swayAmt;
+    }
+  }
+
+  function updateTargets(delta) {
+    targets.forEach(t => {
+      if (t.group.userData.wobble > 0) {
+        t.group.userData.wobble -= delta * 3;
+        t.group.rotation.z = Math.sin(t.group.userData.wobble * Math.PI * 4) * 0.08 * Math.max(t.group.userData.wobble,0);
+      }
+    });
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const delta = Math.min(clock.getDelta(), 0.05);
+    if (isLocked) {
+      updateMovement(delta);
+    }
+    updateTargets(delta);
+    renderer.render(scene, camera);
+  }
+})();
+</script>
+</body>
+</html>
